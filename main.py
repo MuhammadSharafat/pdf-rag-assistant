@@ -6,6 +6,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import uuid
 import os
+import base64
 import datetime
 from data_loader import load_and_chunk_pdf, embed_texts, EMBED_DIM
 from vector_db import QdrantStorage
@@ -21,10 +22,18 @@ groq_client = OpenAI(
 )
 GROQ_MODEL = "openai/gpt-oss-20b"
 
+# Presence of INNGEST_SIGNING_KEY signals we're pointed at Inngest Cloud
+# (production) rather than the local Inngest Dev Server.
+INNGEST_SIGNING_KEY = os.getenv("INNGEST_SIGNING_KEY")
+INNGEST_EVENT_KEY = os.getenv("INNGEST_EVENT_KEY")
+IS_PRODUCTION = bool(INNGEST_SIGNING_KEY)
+
 inngest_client = inngest.Inngest(
     app_id="rag_app",
     logger=logging.getLogger("uvicorn"),
-    is_production=False,
+    is_production=IS_PRODUCTION,
+    signing_key=INNGEST_SIGNING_KEY,
+    event_key=INNGEST_EVENT_KEY,
     serializer=inngest.PydanticSerializer()
 )
 
@@ -42,9 +51,10 @@ inngest_client = inngest.Inngest(
 )
 async def rag_ingest_pdf(ctx: inngest.Context):
     def _load(ctx: inngest.Context) -> RAGChunkAndSrc:
-        pdf_path = ctx.event.data["pdf_path"]
-        source_id = ctx.event.data.get("source_id", pdf_path)
-        chunks = load_and_chunk_pdf(pdf_path)
+        pdf_base64 = ctx.event.data["pdf_base64"]
+        source_id = ctx.event.data["source_id"]
+        pdf_bytes = base64.b64decode(pdf_base64)
+        chunks = load_and_chunk_pdf(pdf_bytes)
         return RAGChunkAndSrc(chunks=chunks, source_id=source_id)
 
     def _upsert(chunks_and_src: RAGChunkAndSrc) -> RAGUpsertResult:

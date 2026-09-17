@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 import time
+import base64
 
 import streamlit as st
 import inngest
@@ -12,13 +13,26 @@ load_dotenv()
 
 st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="centered")
 
+# Presence of INNGEST_SIGNING_KEY signals we're pointed at Inngest Cloud
+# (production) rather than the local Inngest Dev Server.
+INNGEST_SIGNING_KEY = os.getenv("INNGEST_SIGNING_KEY")
+INNGEST_EVENT_KEY = os.getenv("INNGEST_EVENT_KEY")
+IS_PRODUCTION = bool(INNGEST_SIGNING_KEY)
+
 
 @st.cache_resource
 def get_inngest_client() -> inngest.Inngest:
-    return inngest.Inngest(app_id="rag_app", is_production=False)
+    return inngest.Inngest(
+        app_id="rag_app",
+        is_production=IS_PRODUCTION,
+        signing_key=INNGEST_SIGNING_KEY,
+        event_key=INNGEST_EVENT_KEY,
+    )
 
 
 def save_uploaded_pdf(file) -> Path:
+    # Kept for optional local debugging/inspection — not required by the
+    # pipeline anymore, since PDF bytes now travel directly in the event.
     uploads_dir = Path("uploads")
     uploads_dir.mkdir(parents=True, exist_ok=True)
     file_path = uploads_dir / file.name
@@ -27,14 +41,14 @@ def save_uploaded_pdf(file) -> Path:
     return file_path
 
 
-async def send_rag_ingest_event(pdf_path: Path) -> None:
+async def send_rag_ingest_event(file_name: str, pdf_bytes: bytes) -> None:
     client = get_inngest_client()
     await client.send(
         inngest.Event(
             name="rag/ingest_pdf",
             data={
-                "pdf_path": str(pdf_path.resolve()),
-                "source_id": pdf_path.name,
+                "pdf_base64": base64.b64encode(pdf_bytes).decode("ascii"),
+                "source_id": file_name,
             },
         )
     )
@@ -45,12 +59,12 @@ uploaded = st.file_uploader("Choose a PDF", type=["pdf"], accept_multiple_files=
 
 if uploaded is not None:
     with st.spinner("Uploading and triggering ingestion..."):
-        path = save_uploaded_pdf(uploaded)
+        pdf_bytes = uploaded.getvalue()
         # Kick off the event and block until the send completes
-        asyncio.run(send_rag_ingest_event(path))
+        asyncio.run(send_rag_ingest_event(uploaded.name, pdf_bytes))
         # Small pause for user feedback continuity
         time.sleep(0.3)
-    st.success(f"Triggered ingestion for: {path.name}")
+    st.success(f"Triggered ingestion for: {uploaded.name}")
     st.caption("You can upload another PDF if you like.")
 
 st.divider()
@@ -73,13 +87,21 @@ async def send_rag_query_event(question: str, top_k: int) -> None:
 
 
 def _inngest_api_base() -> str:
-    # Local dev server default; configurable via env
-    return os.getenv("INNGEST_API_BASE", "http://127.0.0.1:8288/v1")
+    # Local dev server default; Inngest Cloud in production (or override via env).
+    default_base = "https://api.inngest.com/v1" if IS_PRODUCTION else "http://127.0.0.1:8288/v1"
+    return os.getenv("INNGEST_API_BASE", default_base)
+
+
+def _inngest_api_headers() -> dict:
+    # The local Dev Server needs no auth; Inngest Cloud requires the signing key.
+    if IS_PRODUCTION and INNGEST_SIGNING_KEY:
+        return {"Authorization": f"Bearer {INNGEST_SIGNING_KEY}"}
+    return {}
 
 
 def fetch_runs(event_id: str) -> list[dict]:
     url = f"{_inngest_api_base()}/events/{event_id}/runs"
-    resp = requests.get(url)
+    resp = requests.get(url, headers=_inngest_api_headers())
     resp.raise_for_status()
     data = resp.json()
     return data.get("data", [])
@@ -90,7 +112,7 @@ def fetch_run_detail(run_id: str) -> dict:
     # The per-run endpoint includes the actual "output" field, which on a
     # failed run holds the exception name/message/stack.
     url = f"{_inngest_api_base()}/runs/{run_id}"
-    resp = requests.get(url)
+    resp = requests.get(url, headers=_inngest_api_headers())
     resp.raise_for_status()
     data = resp.json()
     return data.get("data", data)
