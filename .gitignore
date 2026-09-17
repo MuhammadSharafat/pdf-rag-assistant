@@ -1,0 +1,21 @@
+# Environment variables / secret
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment
+ragapp/
+
+# Qdrant local storage
+qdrant_storage/
+qdrant_storage;C/
+
+# Uploaded PDFs
+uploads/
+
+# Editor/OS junk (optional but common)
+.vscode/
+.DS_Store
