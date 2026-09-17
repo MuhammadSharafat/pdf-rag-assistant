@@ -4,6 +4,6 @@ inngest
 python-dotenv
 openai
 qdrant-client
-sentence-transformers
+fastembed
 llama-index-core
 llama-index-readers-file
