@@ -7,3 +7,5 @@ qdrant-client
 fastembed
 llama-index-core
 llama-index-readers-file
+streamlit
+requests
